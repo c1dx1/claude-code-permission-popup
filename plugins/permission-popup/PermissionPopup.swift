@@ -624,6 +624,16 @@ func label(_ text: String, font: NSFont, color: NSColor) -> NSTextField {
 let cardWidth: CGFloat = 384
 let cardPadding: CGFloat = 14
 let cardIconSize: CGFloat = 36
+let cardGap: CGFloat = 10
+
+func processStart(_ pid: pid_t) -> TimeInterval {
+    var info = kinfo_proc()
+    var size = MemoryLayout<kinfo_proc>.stride
+    var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+    guard sysctl(&mib, 4, &info, &size, nil, 0) == 0 else { return 0 }
+    let start = info.kp_proc.p_starttime
+    return TimeInterval(start.tv_sec) + TimeInterval(start.tv_usec) / 1_000_000
+}
 
 final class CardPanel: NSPanel {
     var onBackgroundClick: (() -> Void)?
@@ -647,6 +657,7 @@ final class Card: NSObject {
     private var remaining = cardTimeout
     private var hovering = false
     private var ticker: Timer?
+    private var reflow: Timer?
 
     init(_ request: Request) {
         super.init()
@@ -720,8 +731,11 @@ final class Card: NSObject {
 
     func show(animated: Bool) {
         let size = NSSize(width: cardWidth, height: panel.contentView?.fittingSize.height ?? 100)
-        let frame = NSRect(origin: origin(for: size), size: size)
-        defer { startCountdown() }
+        let frame = NSRect(origin: targetOrigin(height: size.height), size: size)
+        defer {
+            startCountdown()
+            startReflow()
+        }
         guard animated else {
             panel.setFrame(frame, display: true)
             return panel.orderFrontRegardless()
@@ -738,22 +752,38 @@ final class Card: NSObject {
         NSSound(named: NSSound.Name("Glass"))?.play()
     }
 
-    // Requests from parallel sessions each get a card; stack below the ones already on screen.
-    private func origin(for size: NSSize) -> NSPoint {
-        let visible = (NSScreen.main ?? NSScreen.screens[0]).visibleFrame
-        let primaryHeight = NSScreen.screens[0].frame.height
+    // Cards from parallel sessions stack oldest on top, so the one asking longest stays in the corner.
+    private func targetOrigin(height: CGFloat) -> NSPoint {
+        let visible = (panel.screen ?? NSScreen.main ?? NSScreen.screens[0]).visibleFrame
+        let mine = (processStart(getpid()), getpid())
+        let above = otherCards().filter { ($0.start, $0.pid) < mine }.reduce(0) { $0 + $1.height + cardGap }
+        return NSPoint(x: visible.maxX - cardWidth - cardGap, y: max(visible.minY, visible.maxY - cardGap - above - height))
+    }
+
+    private func otherCards() -> [(start: TimeInterval, pid: pid_t, height: CGFloat)] {
         let names = Set([NSRunningApplication.current.localizedName, ProcessInfo.processInfo.processName].compactMap { $0 })
-        var top = visible.maxY - 10
         let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
-        for info in windows {
+        return windows.compactMap { info in
             guard let owner = info[kCGWindowOwnerName as String] as? String, names.contains(owner),
-                  (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value != getpid(),
+                  let pid = (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value, pid != getpid(),
                   let bounds = (info[kCGWindowBounds as String] as? NSDictionary).flatMap({ CGRect(dictionaryRepresentation: $0) }),
                   abs(bounds.width - cardWidth) < 1
-            else { continue }
-            top = min(top, primaryHeight - bounds.maxY - 10)
+            else { return nil }
+            return (processStart(pid), pid, bounds.height)
         }
-        return NSPoint(x: visible.maxX - size.width - 10, y: max(visible.minY, top - size.height))
+    }
+
+    // When a card above goes away, slide up into the freed space.
+    private func startReflow() {
+        reflow = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            let origin = targetOrigin(height: panel.frame.height)
+            guard abs(origin.y - panel.frame.minY) > 0.5 else { return }
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.2
+                self.panel.animator().setFrame(NSRect(origin: origin, size: self.panel.frame.size), display: true)
+            }
+        }
     }
 
     func stopCountdown() {
@@ -767,7 +797,7 @@ final class Card: NSObject {
         ticker = Timer.scheduledTimer(withTimeInterval: step, repeats: true) { [weak self] _ in
             guard let self else { return }
             if !hovering { remaining -= step }
-            guard remaining > 0 else { return expire() }
+            guard remaining > 0 else { return dismiss() }
             CATransaction.begin()
             CATransaction.setDisableActions(true)
             countdown.frame = CGRect(x: 0, y: 0, width: background.bounds.width * remaining / cardTimeout, height: 2)
@@ -779,8 +809,9 @@ final class Card: NSObject {
         }
     }
 
-    private func expire() {
+    func dismiss() {
         stopCountdown()
+        reflow?.invalidate()
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = 0.2
             panel.animator().alphaValue = 0
@@ -902,6 +933,54 @@ final class DetailsWindow: NSObject, NSWindowDelegate {
     func windowWillClose(_ notification: Notification) { leaveToClaude() }
 }
 
+// MARK: - Settled elsewhere
+
+// Claude Code holds back its own prompt while the hook runs, so the card steps aside once the chat is in view
+// or the request got settled some other way.
+final class SettlementWatch {
+    private let transcript = input["transcript_path"] as? String
+    private var toolUseID = input["tool_use_id"] as? String
+    private var offset: UInt64
+
+    init() {
+        offset = (try? FileManager.default.attributesOfItem(atPath: transcript ?? "")[.size] as? UInt64) ?? 0
+        toolUseID = toolUseID ?? findToolUseID()
+    }
+
+    func isSettled() -> Bool {
+        if isOpenInFrontClaudeApp() || getppid() == 1 { return true }
+        var output = pollfd(fd: STDOUT_FILENO, events: Int16(POLLOUT), revents: 0)
+        if poll(&output, 1, 0) > 0, output.revents & Int16(POLLHUP | POLLERR) != 0 { return true }
+        toolUseID = toolUseID ?? findToolUseID()
+        guard let transcript, let toolUseID, let handle = FileHandle(forReadingAtPath: transcript) else { return false }
+        defer { try? handle.close() }
+        try? handle.seek(toOffset: offset)
+        let data = handle.readDataToEndOfFile()
+        // Re-read a short tail next time in case the id was split across two reads.
+        offset += UInt64(max(0, data.count - 128))
+        return String(decoding: data, as: UTF8.self).contains("\"tool_use_id\":\"\(toolUseID)\"")
+    }
+
+    // Older Claude Code versions leave tool_use_id out of the hook input; the call itself is already in the transcript.
+    private func findToolUseID() -> String? {
+        guard let transcript, let handle = FileHandle(forReadingAtPath: transcript) else { return nil }
+        defer { try? handle.close() }
+        let window: UInt64 = 256 * 1024
+        try? handle.seek(toOffset: offset > window ? offset - window : 0)
+        let wanted = json(toolInput, pretty: false)
+        let tail = handle.readData(ofLength: Int(min(offset, window)))
+        for line in String(decoding: tail, as: UTF8.self).split(separator: "\n").reversed() where line.contains("\"tool_use\"") {
+            guard let entry = (try? JSONSerialization.jsonObject(with: Data(line.utf8))) as? [String: Any],
+                  let content = (entry["message"] as? [String: Any])?["content"] as? [[String: Any]]
+            else { continue }
+            for block in content where block["type"] as? String == "tool_use" && block["name"] as? String == toolName {
+                if let blockInput = block["input"], json(blockInput, pretty: false) == wanted { return block["id"] as? String }
+            }
+        }
+        return nil
+    }
+}
+
 // MARK: - Main
 
 let app = NSApplication.shared
@@ -961,5 +1040,11 @@ if let snapshotPath = environment["PERMISSION_POPUP_SNAPSHOT"] {
     }
 } else {
     card.show(animated: true)
+    let watch = SettlementWatch()
+    Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { timer in
+        guard watch.isSettled() else { return }
+        timer.invalidate()
+        if card.panel.isVisible { card.dismiss() } else { leaveToClaude() }
+    }
 }
 app.run()

@@ -9,7 +9,7 @@
       "name": "permission-popup",
       "source": "./plugins/permission-popup",
       "description": "macOS: карточка в углу экрана с кнопками Разрешить/Запретить, когда Claude Code просит разрешение на команду или правку",
-      "version": "1.0.0"
+      "version": "1.1.0"
     }
   ]
 }

@@ -1,5 +1,5 @@
 {
-  "description": "Карточка с Разрешить/Запретить на запросы разрешений Claude Code (macOS)",
+  "description": "Card with Allow/Deny for Claude Code permission prompts (macOS)",
   "hooks": {
     "PermissionRequest": [
       {

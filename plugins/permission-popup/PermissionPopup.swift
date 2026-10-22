@@ -36,6 +36,13 @@ let suggestions = input["permission_suggestions"] as? [[String: Any]] ?? []
 let cwd = input["cwd"] as? String ?? FileManager.default.currentDirectoryPath
 let projectName = (cwd as NSString).lastPathComponent
 
+// Follows the system language: Russian when it comes first, English otherwise.
+let usesRussian = Locale.preferredLanguages.first?.hasPrefix("ru") == true
+
+func tr(_ english: String, _ russian: String) -> String {
+    usesRussian ? russian : english
+}
+
 func respond(_ decision: [String: Any]) -> Never {
     let output: [String: Any] = ["hookSpecificOutput": ["hookEventName": "PermissionRequest", "decision": decision]]
     if let data = try? JSONSerialization.data(withJSONObject: output) {
@@ -384,7 +391,7 @@ func renderDiff(_ lines: [DiffLine], context: Int = 3) -> NSAttributedString {
     var skipped = 0, rendered = 0
     func flushSkipped() {
         guard skipped > 0 else { return }
-        out.add("  ⋯ без изменений: \(skipped)\n", color: Palette.tertiary)
+        out.add(tr("  ⋯ unchanged: \(skipped)\n", "  ⋯ без изменений: \(skipped)\n"), color: Palette.tertiary)
         skipped = 0
     }
     for (index, line) in lines.enumerated() {
@@ -393,7 +400,7 @@ func renderDiff(_ lines: [DiffLine], context: Int = 3) -> NSAttributedString {
             continue
         }
         guard rendered < maxRenderedLines else {
-            out.add("… дальше обрезано\n", color: Palette.tertiary)
+            out.add(tr("… truncated\n", "… дальше обрезано\n"), color: Palette.tertiary)
             return out
         }
         flushSkipped()
@@ -459,7 +466,7 @@ func describeRequest() -> Request {
         body.add("$ ", font: mono(codeSize, bold: true), color: Palette.accent)
         body.append(formatShell(short, indent: "    ", size: codeSize))
         return Request(
-            title: "Запустить команду", subtitle: string("description"), body: withHangingIndent(body, columns: 6),
+            title: tr("Run a command", "Запустить команду"), subtitle: string("description"), body: withHangingIndent(body, columns: 6),
             raw: short == command ? nil : command,
             preview: formatShell(String(short.prefix(600)), indent: "  ", size: previewSize)
         )
@@ -470,27 +477,27 @@ func describeRequest() -> Request {
             location += ":\(content[..<range.lowerBound].filter { $0 == "\n" }.count + 1)"
         }
         if toolInput["replace_all"] as? Bool == true {
-            location += " · все вхождения"
+            location += tr(" · all occurrences", " · все вхождения")
         }
         let lines = diffLines(old: old, new: string("new_string"))
-        return Request(title: "Изменить файл", subtitle: location, body: renderDiff(lines), preview: previewDiff(lines))
+        return Request(title: tr("Edit a file", "Изменить файл"), subtitle: location, body: renderDiff(lines), preview: previewDiff(lines))
     case "Write":
         let path = string("file_path")
         let existing = try? String(contentsOfFile: path, encoding: .utf8)
         let lines = diffLines(old: existing ?? "", new: string("content"))
-        let title = existing == nil ? "Создать файл" : "Перезаписать файл"
+        let title = existing == nil ? tr("Create a file", "Создать файл") : tr("Overwrite a file", "Перезаписать файл")
         return Request(title: title, subtitle: displayPath(path), body: renderDiff(lines), preview: previewDiff(lines))
     case "NotebookEdit":
         let source = string("new_source")
-        return Request(title: "Изменить ноутбук", subtitle: displayPath(string("notebook_path")), body: plain(source), preview: preview(source))
+        return Request(title: tr("Edit a notebook", "Изменить ноутбук"), subtitle: displayPath(string("notebook_path")), body: plain(source), preview: preview(source))
     case "Read":
         let path = displayPath(string("file_path"))
-        return Request(title: "Прочитать файл", subtitle: path, body: highlightJSON(json(toolInput)), preview: preview(path))
+        return Request(title: tr("Read a file", "Прочитать файл"), subtitle: path, body: highlightJSON(json(toolInput)), preview: preview(path))
     case "WebFetch":
         let prompt = string("prompt")
-        return Request(title: "Открыть страницу", subtitle: string("url"), body: plain(prompt, font: .systemFont(ofSize: 13)), preview: preview(prompt))
+        return Request(title: tr("Fetch a page", "Открыть страницу"), subtitle: string("url"), body: plain(prompt, font: .systemFont(ofSize: 13)), preview: preview(prompt))
     case "WebSearch":
-        return Request(title: "Поиск в интернете", subtitle: string("query"), body: highlightJSON(json(toolInput)), preview: preview(string("query")))
+        return Request(title: tr("Search the web", "Поиск в интернете"), subtitle: string("query"), body: highlightJSON(json(toolInput)), preview: preview(string("query")))
     default:
         let parts = toolName.components(separatedBy: "__")
         let title = parts.count == 3 && parts[0] == "mcp" ? "MCP · \(parts[1]) → \(parts[2])" : toolName
@@ -510,15 +517,15 @@ func describeSuggestion(_ suggestion: [String: Any]) -> String {
         }
         return rules.joined(separator: ", ")
     case "addDirectories":
-        return "доступ к " + (suggestion["directories"] as? [String] ?? []).joined(separator: ", ")
+        return tr("access to ", "доступ к ") + (suggestion["directories"] as? [String] ?? []).joined(separator: ", ")
     case "setMode":
-        return "режим " + (suggestion["mode"] as? String ?? "?")
+        return tr("mode ", "режим ") + (suggestion["mode"] as? String ?? "?")
     default:
         return json(suggestion)
     }
 }
 
-let alwaysTooltip = "Разрешать всегда: " + suggestions.map(describeSuggestion).joined(separator: ", ")
+let alwaysTooltip = tr("Always allow: ", "Разрешать всегда: ") + suggestions.map(describeSuggestion).joined(separator: ", ")
 
 // MARK: - Views
 
@@ -672,7 +679,7 @@ final class Card: NSObject {
         let textWidth = cardWidth - cardPadding * 2 - cardIconSize - 12
         let icon = NSImageView(image: appIcon())
         let close = PillButton("✕", style: .plain, compact: true, target: self, action: #selector(closeClicked))
-        close.toolTip = "Ответить в Claude"
+        close.toolTip = tr("Answer in Claude", "Ответить в Claude")
         let titleRow = NSStackView()
         titleRow.addView(label(request.title, font: .systemFont(ofSize: 13, weight: .semibold), color: Palette.text), in: .leading)
         titleRow.addView(close, in: .trailing)
@@ -694,14 +701,14 @@ final class Card: NSObject {
 
         let buttons = NSStackView()
         buttons.spacing = 6
-        buttons.addView(PillButton("Подробнее", style: .plain, compact: true, target: self, action: #selector(detailsClicked)), in: .leading)
+        buttons.addView(PillButton(tr("Details", "Подробнее"), style: .plain, compact: true, target: self, action: #selector(detailsClicked)), in: .leading)
         if !suggestions.isEmpty {
-            let always = PillButton("Всегда", style: .secondary, compact: true, target: self, action: #selector(allowAlwaysClicked))
+            let always = PillButton(tr("Always", "Всегда"), style: .secondary, compact: true, target: self, action: #selector(allowAlwaysClicked))
             always.toolTip = alwaysTooltip
             buttons.addView(always, in: .trailing)
         }
-        buttons.addView(PillButton("Запретить", style: .secondary, compact: true, target: self, action: #selector(denyClicked)), in: .trailing)
-        buttons.addView(PillButton("Разрешить", style: .primary, compact: true, target: self, action: #selector(allowClicked)), in: .trailing)
+        buttons.addView(PillButton(tr("Deny", "Запретить"), style: .secondary, compact: true, target: self, action: #selector(denyClicked)), in: .trailing)
+        buttons.addView(PillButton(tr("Allow", "Разрешить"), style: .primary, compact: true, target: self, action: #selector(allowClicked)), in: .trailing)
 
         let stack = NSStackView(views: [top, buttons])
         stack.orientation = .vertical
@@ -874,12 +881,12 @@ final class DetailsWindow: NSObject, NSWindowDelegate {
         let buttons = NSStackView()
         buttons.spacing = 8
         if !suggestions.isEmpty {
-            let always = PillButton("Разрешать всегда", style: .secondary, target: self, action: #selector(allowAlwaysClicked))
+            let always = PillButton(tr("Always allow", "Разрешать всегда"), style: .secondary, target: self, action: #selector(allowAlwaysClicked))
             always.toolTip = alwaysTooltip
             buttons.addView(always, in: .trailing)
         }
-        buttons.addView(PillButton("Запретить", style: .secondary, target: self, action: #selector(denyClicked)), in: .trailing)
-        buttons.addView(PillButton("Разрешить", style: .primary, target: self, action: #selector(allowClicked)), in: .trailing)
+        buttons.addView(PillButton(tr("Deny", "Запретить"), style: .secondary, target: self, action: #selector(denyClicked)), in: .trailing)
+        buttons.addView(PillButton(tr("Allow", "Разрешить"), style: .primary, target: self, action: #selector(allowClicked)), in: .trailing)
 
         let rows: [NSView] = [title, context, card, buttons]
         let stack = NSStackView(views: rows)

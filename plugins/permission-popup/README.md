@@ -1,47 +1,17 @@
 # permission-popup
 
-Плагин Claude Code для macOS. Когда Claude просит разрешение запустить команду или поменять файл,
-в правом верхнем углу экрана выезжает карточка с кнопками **Запретить / Разрешить**
-(и **Всегда**, если Claude Code предлагает правило). Можно ответить, не переключаясь в Claude.
+Claude Code plugin for macOS: a card in the corner of the screen with **Allow / Deny** for permission prompts.
+Screenshots, installation and details are in the [repository README](../../README.md).
 
-## Как работает
+## Files
 
-- В карточке видно, что именно просят: команду (длинные цепочки разбиты по строкам, пути сокращены)
-  или дифф правки.
-- Клик по карточке или «Подробнее» открывает окно с полной командой или диффом.
-  В окне Enter разрешает, Esc запрещает. Полная команда без сокращений путей — в подсказке при наведении на код.
-- Карточка живёт 15 секунд (полоска внизу), пока курсор над ней — отсчёт стоит.
-  Не ответили или нажали ✕ — вопрос появляется в обычном промпте Claude Code.
-- Пока карточка на экране, Claude Code придерживает свой промпт. Открыли этот чат в десктопном Claude —
-  карточка сразу уходит, и вопрос появляется в чате. Если чат уже открыт и Claude впереди, карточки нет вовсе.
-- Если вопрос успели решить где-то ещё, карточка тоже уходит сама.
-- Карточки из нескольких сессий стоят стопкой, старая сверху; когда верхняя уходит, остальные поднимаются.
-- Запрет останавливает Claude, как обычное «No» в промпте.
-- Вопросы Claude (AskUserQuestion) и подтверждение плана карточка не перехватывает.
-- Не на macOS хук ничего не делает.
+- `hooks/hooks.json`: registers the `PermissionRequest` hook
+- `bin/permission-popup`: the hook entry point; exits silently off macOS and builds the app if it is missing
+- `PermissionPopup.swift`: the card, the details window and the decision logic
+- `make-icon.swift`: draws the app icon
+- `build.sh`: builds `PermissionPopup.app` for Apple Silicon and Intel, macOS 13+
 
-## Установка
+## Configuration
 
-Требуется macOS 13 или новее. В Claude Code:
-
-```
-/plugin marketplace add c1dx1/claude-code-permission-popup
-/plugin install permission-popup@claude-code-permission-popup
-```
-
-Если раньше подключали этот хук вручную в `~/.claude/settings.json`, уберите его оттуда,
-иначе на каждый запрос придёт две карточки.
-
-## Настройка
-
-Время жизни карточки в секундах — переменная `PERMISSION_POPUP_TIMEOUT`, например в `~/.claude/settings.json`:
-
-```json
-{ "env": { "PERMISSION_POPUP_TIMEOUT": "30" } }
-```
-
-## Сборка
-
-В плагине уже лежит собранное приложение (Apple Silicon и Intel). Пересобрать из исходников
-(`PermissionPopup.swift`, иконка — `make-icon.swift`) можно через `./build.sh`, нужны Xcode Command Line Tools.
-Если собранного приложения нет, плагин соберёт его сам при первом запросе.
+`PERMISSION_POPUP_TIMEOUT` sets how many seconds a card waits before handing the question to Claude Code's own prompt
+(default 15).

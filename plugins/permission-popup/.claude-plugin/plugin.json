@@ -1,7 +1,7 @@
 {
   "name": "permission-popup",
   "version": "1.1.0",
-  "description": "macOS: карточка в углу экрана с кнопками Разрешить/Запретить, когда Claude Code просит разрешение на команду или правку",
+  "description": "macOS: answer Claude Code permission prompts from a card in the corner of the screen",
   "author": {
     "name": "Nikita Solovyov"
   }

@@ -8,18 +8,22 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
 build() {
+    output=$1
+    shift
     for arch in arm64 x86_64; do
-        swiftc -O -swift-version 5 -target "$arch-apple-macos$min_macos" "$1" -o "$work/$2-$arch"
+        swiftc -O -swift-version 5 -target "$arch-apple-macos$min_macos" "$@" -o "$work/$(basename "$output")-$arch"
     done
-    lipo -create "$work/$2-arm64" "$work/$2-x86_64" -output "$3"
+    lipo -create "$work/$(basename "$output")-arm64" "$work/$(basename "$output")-x86_64" -output "$output"
 }
 
 mkdir -p "$work/$app/Contents/MacOS" "$work/$app/Contents/Resources"
 cp Info.plist "$work/$app/Contents/Info.plist"
-build PermissionPopup.swift permission-popup "$work/$app/Contents/MacOS/permission-popup"
-build make-icon.swift make-icon "$work/make-icon"
+build "$work/$app/Contents/MacOS/permission-popup" Sources/*.swift
+build "$work/make-icon" make-icon.swift
 "$work/make-icon" "$work/AppIcon.iconset"
 iconutil -c icns "$work/AppIcon.iconset" -o "$work/$app/Contents/Resources/AppIcon.icns"
+# CI compares this against the sources to catch a committed app that is out of date.
+./source-hash.sh > "$work/$app/Contents/Resources/source.sha256"
 codesign --force --sign - "$work/$app"
 # Swapped in whole, so a hook running mid-build never sees a half-written app.
 rm -rf "$app.old"

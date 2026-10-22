@@ -1,0 +1,9 @@
+{
+  "tool_name": "Edit",
+  "cwd": "/Users/demo/projects/acme-api",
+  "tool_input": {
+    "file_path": "/Users/demo/projects/acme-api/internal/orders/service.go",
+    "old_string": "func (s *Service) Cancel(ctx context.Context, id uuid.UUID) error {\n\torder, err := s.repo.Get(ctx, id)\n\tif err != nil {\n\t\treturn err\n\t}\n\torder.Status = StatusCancelled\n",
+    "new_string": "func (s *Service) Cancel(ctx context.Context, id uuid.UUID) error {\n\torder, err := s.repo.Get(ctx, id)\n\tif err != nil {\n\t\treturn fmt.Errorf(\"get order %s: %w\", id, err)\n\t}\n\tif order.Status == StatusShipped {\n\t\treturn ErrAlreadyShipped\n\t}\n\torder.Status = StatusCancelled\n"
+  }
+}

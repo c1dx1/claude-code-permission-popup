@@ -1,0 +1,8 @@
+{
+  "tool_name": "Bash",
+  "cwd": "/Users/demo/projects/acme-api",
+  "tool_input": {
+    "command": "git push --force origin main",
+    "description": "Overwrite main with the rebased branch"
+  }
+}

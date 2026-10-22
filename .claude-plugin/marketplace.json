@@ -9,7 +9,7 @@
       "name": "permission-popup",
       "source": "./plugins/permission-popup",
       "description": "macOS: answer Claude Code permission prompts from a card in the corner of the screen",
-      "version": "1.1.0"
+      "version": "1.2.0"
     }
   ]
 }

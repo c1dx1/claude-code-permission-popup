@@ -6,7 +6,11 @@
 	<dict>
 		<key>Resources/AppIcon.icns</key>
 		<data>
-		WX4KzM/2THoRtVk3ntnRphxNr8I=
+		lp1CZgmqqKHPOv0inaVmVisdvQc=
+		</data>
+		<key>Resources/source.sha256</key>
+		<data>
+		LC+2CG74x7GuhGbP4njQrUWYJ94=
 		</data>
 	</dict>
 	<key>files2</key>
@@ -15,7 +19,14 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			yPkdOfpD72PqSrNrpioo/zoxZFIrVM3+etbxnNMsHm0=
+			Q8ONKehKqd8Smp143DIFU1F/bKMfrMvjuGBoZVtvOPM=
+			</data>
+		</dict>
+		<key>Resources/source.sha256</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			mE+ht7s6GW5NUzZzvoF9w9aXgYHjIPiPHqsh/S70QqU=
 			</data>
 		</dict>
 	</dict>

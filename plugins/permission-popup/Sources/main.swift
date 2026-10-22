@@ -1,4 +1,5 @@
 import AppKit
+import Carbon.HIToolbox
 
 // Claude Code PermissionRequest hook: a notification-style card with Allow/Deny, the full request in a window on demand.
 // System notifications hide action buttons behind an "Options" menu, hence a card of our own.
@@ -9,22 +10,32 @@ let environment = ProcessInfo.processInfo.environment
 let cardTimeout = TimeInterval(environment["PERMISSION_POPUP_TIMEOUT"] ?? "") ?? 15
 // Stays under the 600 s hook timeout in settings.json.
 let windowTimeout: TimeInterval = 540
+let grantMinutes = Double(environment["PERMISSION_POPUP_GRANT_MINUTES"] ?? "") ?? 10
+let soundEnabled = environment["PERMISSION_POPUP_SOUND"] != "0"
 // Their answers are richer than allow/deny, so only Claude Code's own UI can collect them.
 let passthroughTools: Set<String> = ["AskUserQuestion", "ExitPlanMode"]
+let hostSession = environment["CLAUDE_CODE_HOST_SESSION_ID"]
+
+enum Corner: String {
+    case topRight = "top-right", topLeft = "top-left", bottomRight = "bottom-right", bottomLeft = "bottom-left"
+
+    var isRight: Bool { self == .topRight || self == .bottomRight }
+    var isTop: Bool { self == .topRight || self == .topLeft }
+}
+
+let corner = Corner(rawValue: environment["PERMISSION_POPUP_CORNER"] ?? "") ?? .topRight
 
 // The chat open in the frontmost Claude app already shows Claude Code's own prompt; a card would only repeat it.
 func isOpenInFrontClaudeApp() -> Bool {
-    guard let session = environment["CLAUDE_CODE_HOST_SESSION_ID"],
-          NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "com.anthropic.claudefordesktop"
+    guard let hostSession, NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "com.anthropic.claudefordesktop"
     else { return false }
     // Undocumented app state: if its shape changes, the card just keeps showing.
     let url = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support/Claude/claude_desktop_config.json")
     guard let data = try? Data(contentsOf: url),
           let config = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-          let panes = ((config["preferences"] as? [String: Any])?["epitaxyPrefs"] as? [String: Any])?["desktop-frame.paneStore.v1"],
-          let panesData = try? JSONSerialization.data(withJSONObject: panes)
+          let panes = ((config["preferences"] as? [String: Any])?["epitaxyPrefs"] as? [String: Any])?["desktop-frame.paneStore.v1"]
     else { return false }
-    return String(decoding: panesData, as: UTF8.self).contains("\"\(session)\"")
+    return json(panes, pretty: false).contains("\"\(hostSession)\"")
 }
 
 let input = (try? JSONSerialization.jsonObject(with: FileHandle.standardInput.readDataToEndOfFile())) as? [String: Any] ?? [:]
@@ -35,6 +46,8 @@ let toolInput = input["tool_input"] as? [String: Any] ?? [:]
 let suggestions = input["permission_suggestions"] as? [[String: Any]] ?? []
 let cwd = input["cwd"] as? String ?? FileManager.default.currentDirectoryPath
 let projectName = (cwd as NSString).lastPathComponent
+let paths = PathShortener(cwd: cwd, home: NSHomeDirectory())
+let danger = dangerLabel(toolName: toolName, input: toolInput)
 
 // Follows the system language: Russian when it comes first, English otherwise.
 let usesRussian = Locale.preferredLanguages.first?.hasPrefix("ru") == true
@@ -59,13 +72,57 @@ func allowAlways() -> Never {
     respond(["behavior": "allow", "updatedPermissions": suggestions])
 }
 
-// Stops Claude like the built-in "No" does.
-func deny() -> Never {
-    respond(["behavior": "deny", "message": "The user denied this tool call.", "interrupt": true])
+func allowForAWhile() -> Never {
+    let rule = suggestedRules.first { PermissionRule($0) != nil }
+    GrantStore.standard.add(Grant(
+        cwd: cwd, rule: rule, toolName: toolName, input: rule == nil ? json(toolInput, pretty: false) : nil,
+        expires: Date().addingTimeInterval(grantMinutes * 60)
+    ))
+    allow()
+}
+
+// A bare deny stops Claude like the built-in "No" does; a reason lets it adapt and continue.
+func deny(reason: String = "") -> Never {
+    let text = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+    if text.isEmpty {
+        respond(["behavior": "deny", "message": "The user denied this tool call.", "interrupt": true])
+    }
+    respond(["behavior": "deny", "message": text])
 }
 
 func leaveToClaude() -> Never {
     exit(0)
+}
+
+// Suggestions go back to Claude Code verbatim; this only labels them, across the shapes seen so far.
+func describeSuggestion(_ suggestion: [String: Any]) -> String {
+    if let rule = suggestion["rule"] as? String { return rule }
+    switch suggestion["type"] as? String {
+    case "addRules", "replaceRules":
+        let rules = (suggestion["rules"] as? [[String: Any]] ?? []).map { rule in
+            let tool = rule["toolName"] as? String ?? "?"
+            guard let content = rule["ruleContent"] as? String else { return tool }
+            return "\(tool)(\(content))"
+        }
+        return rules.joined(separator: ", ")
+    case "addDirectories":
+        return tr("access to ", "доступ к ") + (suggestion["directories"] as? [String] ?? []).joined(separator: ", ")
+    case "setMode":
+        return tr("mode ", "режим ") + (suggestion["mode"] as? String ?? "?")
+    default:
+        return json(suggestion)
+    }
+}
+
+let suggestedRules = suggestions.flatMap { describeSuggestion($0).components(separatedBy: ", ") }
+let alwaysTooltip = tr("Always allow: ", "Разрешать всегда: ") + suggestions.map(describeSuggestion).joined(separator: ", ")
+let grantTooltip = suggestedRules.first { PermissionRule($0) != nil }.map {
+    tr("For this project, calls matching ", "В этом проекте вызовы под правило ") + $0
+} ?? tr("For this project, exactly this call", "В этом проекте ровно этот вызов")
+
+// Dangerous requests never ride on a grant, they always ask.
+if danger == nil, GrantStore.standard.allows(toolName: toolName, input: toolInput, cwd: cwd, home: NSHomeDirectory()) {
+    allow()
 }
 
 // MARK: - Style
@@ -102,6 +159,9 @@ enum Palette {
     static let removedBackground = dynamicColor(light: 0xC9553D, dark: 0xE07A62, alpha: 0.13)
     static let inserted = dynamicColor(light: 0x3F6E2A, dark: 0xA8D18F)
     static let insertedBackground = dynamicColor(light: 0x5C9A3E, dark: 0x7FBF62, alpha: 0.14)
+    static let danger = dynamicColor(light: 0xB3261E, dark: 0xF2867A)
+    static let dangerBackground = dynamicColor(light: 0xFBEDEA, dark: 0x3A2523)
+    static let dangerBorder = dynamicColor(light: 0xE8B4AC, dark: 0x6B3A35)
 }
 
 let codeSize: CGFloat = 12.5
@@ -134,188 +194,22 @@ func plain(_ text: String, font: NSFont = mono(codeSize), color: NSColor = Palet
     return out
 }
 
-// Display only: Claude Code still runs exactly what it sent, and the code's tooltip shows it as is.
-func shortenPaths(_ text: String) -> String {
-    var out = text.replacingOccurrences(
-        of: #"(?:/private)?/tmp/claude-\d+/[^/\s'"]+/[0-9a-f-]{36}"#, with: "…", options: .regularExpression
-    )
-    for (path, replacement) in [(cwd, "."), (NSHomeDirectory(), "~")] where path.count > 1 {
-        let pattern = NSRegularExpression.escapedPattern(for: path) + #"(?=[/\s'":;)|&]|$)"#
-        out = out.replacingOccurrences(of: pattern, with: replacement, options: .regularExpression)
+func render(_ segments: [ShellSegment], size: CGFloat) -> NSAttributedString {
+    let out = NSMutableAttributedString()
+    for segment in segments {
+        let (color, bold): (NSColor, Bool) = switch segment.token {
+        case .plain: (Palette.text, false)
+        case .command: (Palette.text, true)
+        case .keyword: (Palette.accent, false)
+        case .op: (Palette.accent, true)
+        case .variable: (Palette.variable, false)
+        case .string: (Palette.string, false)
+        case .flag: (Palette.secondary, false)
+        case .redirect, .comment: (Palette.tertiary, false)
+        }
+        out.add(segment.text, font: mono(size, bold: bold), color: color)
     }
     return out
-}
-
-func displayPath(_ path: String) -> String {
-    let short = shortenPaths(path)
-    return short.hasPrefix("./") ? String(short.dropFirst(2)) : short
-}
-
-let shellKeywords: Set<String> = ["if", "then", "elif", "else", "fi", "for", "while", "until", "do", "done", "case", "esac", "function", "!", "{", "}"]
-let commandPrefixes: Set<String> = ["sudo", "time", "nohup", "exec", "command"]
-
-// Colors a shell command and puts each link of a long one-line chain on its own line.
-struct ShellFormatter {
-    private let chars: [Character]
-    private let indent: String
-    private let size: CGFloat
-    private let wrap: Bool
-    private var i = 0
-    private var expectCommand = true
-    private var awaitingDelimiter = false
-    private var heredocDelimiter: String?
-    private var text = NSMutableAttributedString()
-
-    init(_ command: String, indent: String, size: CGFloat) {
-        chars = Array(command)
-        self.indent = indent
-        self.size = size
-        wrap = command.count > 72 && !command.contains("\n")
-    }
-
-    mutating func format() -> NSAttributedString {
-        while i < chars.count {
-            let c = chars[i]
-            switch c {
-            case "\n":
-                emit("\n", Palette.text)
-                i += 1
-                expectCommand = true
-                if let delimiter = heredocDelimiter {
-                    readHeredoc(until: delimiter)
-                    heredocDelimiter = nil
-                }
-            case " ", "\t":
-                emit(String(c), Palette.text)
-                i += 1
-            case "#" where expectCommand || (i > 0 && chars[i - 1].isWhitespace):
-                var comment = ""
-                while i < chars.count, chars[i] != "\n" {
-                    comment.append(chars[i])
-                    i += 1
-                }
-                emit(comment, Palette.tertiary)
-            default:
-                if let op = ["&&", "||", ";;", "|", ";"].first(where: matches) {
-                    emitOperator(op)
-                } else {
-                    emitWord(readWord())
-                }
-            }
-        }
-        return text
-    }
-
-    private mutating func emit(_ s: String, _ color: NSColor, bold: Bool = false) {
-        text.add(s, font: mono(size, bold: bold), color: color)
-    }
-
-    private func matches(_ token: String) -> Bool {
-        let token = Array(token)
-        return i + token.count <= chars.count && Array(chars[i ..< i + token.count]) == token
-    }
-
-    private mutating func emitOperator(_ op: String) {
-        i += op.count
-        emit(op, Palette.accent, bold: true)
-        expectCommand = true
-        guard wrap else { return }
-        while i < chars.count, chars[i] == " " || chars[i] == "\t" { i += 1 }
-        if i < chars.count { emit("\n" + indent, Palette.text) }
-    }
-
-    private mutating func readWord() -> String {
-        var word = ""
-        var quote: Character?
-        var depth = 0
-        while i < chars.count {
-            let c = chars[i]
-            if let open = quote {
-                word.append(c)
-                i += 1
-                if c == "\\", open == "\"", i < chars.count {
-                    word.append(chars[i])
-                    i += 1
-                } else if c == open {
-                    quote = nil
-                }
-                continue
-            }
-            if depth == 0, c == " " || c == "\t" || c == "\n" || c == ";" || c == "|" || matches("&&") { break }
-            switch c {
-            case "'", "\"": quote = c
-            case "(": depth += 1
-            case ")": depth = max(0, depth - 1)
-            case "\\" where i + 1 < chars.count:
-                word.append(c)
-                i += 1
-            default: break
-            }
-            word.append(chars[i])
-            i += 1
-        }
-        return word
-    }
-
-    private mutating func emitWord(_ word: String) {
-        if awaitingDelimiter {
-            awaitingDelimiter = false
-            heredocDelimiter = Self.delimiter(word)
-            return emit(word, Palette.tertiary)
-        }
-        if word.hasPrefix("<<"), !word.hasPrefix("<<<") {
-            let rest = String(word.dropFirst(2))
-            if rest.isEmpty || rest == "-" { awaitingDelimiter = true } else { heredocDelimiter = Self.delimiter(rest) }
-            return emit(word, Palette.tertiary)
-        }
-        guard expectCommand else { return emit(word, Self.color(of: word)) }
-
-        if let equals = word.firstIndex(of: "="), let first = word.first, !first.isNumber, first != "=",
-           word[..<equals].allSatisfy({ $0.isLetter || $0.isNumber || $0 == "_" }) {
-            emit(String(word[..<equals]), Palette.variable)
-            return emit(String(word[equals...]), Palette.text)
-        }
-        if shellKeywords.contains(word) { return emit(word, Palette.accent) }
-        emit(word, Palette.text, bold: true)
-        expectCommand = commandPrefixes.contains(word)
-    }
-
-    private mutating func readHeredoc(until delimiter: String) {
-        while i < chars.count {
-            var line = ""
-            while i < chars.count, chars[i] != "\n" {
-                line.append(chars[i])
-                i += 1
-            }
-            let isEnd = line.trimmingCharacters(in: .whitespaces) == delimiter
-            emit(line, isEnd ? Palette.tertiary : Palette.string)
-            if i < chars.count {
-                emit("\n", Palette.text)
-                i += 1
-            }
-            if isEnd { return }
-        }
-    }
-
-    private static func delimiter(_ word: String) -> String {
-        String(word.drop(while: { $0 == "-" })).trimmingCharacters(in: CharacterSet(charactersIn: "'\""))
-    }
-
-    private static func color(of word: String) -> NSColor {
-        guard let first = word.first else { return Palette.text }
-        switch first {
-        case "'", "\"": return Palette.string
-        case "-": return Palette.secondary
-        case "$": return Palette.variable
-        case ">", "<": return Palette.tertiary
-        default: return first.isNumber && word.dropFirst().first == ">" ? Palette.tertiary : Palette.text
-        }
-    }
-}
-
-func formatShell(_ command: String, indent: String, size: CGFloat) -> NSAttributedString {
-    var formatter = ShellFormatter(command, indent: indent, size: size)
-    return formatter.format()
 }
 
 // Soft-wrapped tails of long lines continue under the code instead of at column zero.
@@ -328,54 +222,11 @@ func withHangingIndent(_ text: NSAttributedString, columns: Int) -> NSAttributed
     return out
 }
 
-func highlightJSON(_ json: String) -> NSAttributedString {
-    let out = NSMutableAttributedString(string: json, attributes: [.font: mono(codeSize), .foregroundColor: Palette.text])
-    let ns = json as NSString
-    guard let strings = try? NSRegularExpression(pattern: #""(?:[^"\\]|\\.)*""#) else { return out }
-    for match in strings.matches(in: json, range: NSRange(location: 0, length: ns.length)) {
-        var next = match.range.upperBound
-        while next < ns.length, ns.character(at: next) == UInt16(UInt8(ascii: " ")) { next += 1 }
-        let isKey = next < ns.length && ns.character(at: next) == UInt16(UInt8(ascii: ":"))
-        out.addAttribute(.foregroundColor, value: isKey ? Palette.variable : Palette.string, range: match.range)
-    }
-    return out
-}
-
-func splitLines(_ text: String) -> [String] {
-    var lines = text.components(separatedBy: "\n")
-    if lines.last == "" { lines.removeLast() }
-    return lines
-}
-
-enum DiffLine {
-    case same(String), removed(String), inserted(String)
-}
-
-func diffLines(old: String, new: String) -> [DiffLine] {
-    let a = splitLines(old), b = splitLines(new)
-    var removed = Set<Int>(), inserted = Set<Int>()
-    for change in b.difference(from: a) {
-        switch change {
-        case let .remove(offset, _, _): removed.insert(offset)
-        case let .insert(offset, _, _): inserted.insert(offset)
-        }
-    }
-    var out: [DiffLine] = []
-    var i = 0, j = 0
-    while i < a.count || j < b.count {
-        if i < a.count, removed.contains(i) {
-            out.append(.removed(a[i]))
-            i += 1
-        } else if j < b.count, inserted.contains(j) {
-            out.append(.inserted(b[j]))
-            j += 1
-        } else if i < a.count, j < b.count {
-            out.append(.same(a[i]))
-            i += 1
-            j += 1
-        } else {
-            break
-        }
+func renderSummary(_ input: [String: Any], size: CGFloat) -> NSAttributedString {
+    let out = NSMutableAttributedString()
+    for (index, field) in summarize(input).enumerated() {
+        out.add((index > 0 ? "\n" : "") + field.key + ": ", font: mono(size), color: Palette.variable)
+        out.add(field.value, font: mono(size), color: Palette.text)
     }
     return out
 }
@@ -437,14 +288,6 @@ func string(_ key: String) -> String {
     toolInput[key] as? String ?? ""
 }
 
-func json(_ value: Any, pretty: Bool = true) -> String {
-    var options: JSONSerialization.WritingOptions = [.sortedKeys, .withoutEscapingSlashes]
-    if pretty { options.insert(.prettyPrinted) }
-    guard JSONSerialization.isValidJSONObject(value), let data = try? JSONSerialization.data(withJSONObject: value, options: options)
-    else { return String(describing: value) }
-    return String(decoding: data, as: UTF8.self)
-}
-
 struct Request {
     var title: String
     var subtitle = ""
@@ -461,18 +304,18 @@ func describeRequest() -> Request {
     switch toolName {
     case "Bash":
         let command = string("command")
-        let short = shortenPaths(command)
+        let short = paths.shorten(command)
         let body = NSMutableAttributedString()
         body.add("$ ", font: mono(codeSize, bold: true), color: Palette.accent)
-        body.append(formatShell(short, indent: "    ", size: codeSize))
+        body.append(render(formatShell(short, indent: "    "), size: codeSize))
         return Request(
             title: tr("Run a command", "Запустить команду"), subtitle: string("description"), body: withHangingIndent(body, columns: 6),
             raw: short == command ? nil : command,
-            preview: formatShell(String(short.prefix(600)), indent: "  ", size: previewSize)
+            preview: render(formatShell(String(short.prefix(600)), indent: "  "), size: previewSize)
         )
     case "Edit":
         let path = string("file_path"), old = string("old_string")
-        var location = displayPath(path)
+        var location = paths.display(path)
         if !old.isEmpty, let content = try? String(contentsOfFile: path, encoding: .utf8), let range = content.range(of: old) {
             location += ":\(content[..<range.lowerBound].filter { $0 == "\n" }.count + 1)"
         }
@@ -482,58 +325,40 @@ func describeRequest() -> Request {
         let lines = diffLines(old: old, new: string("new_string"))
         return Request(title: tr("Edit a file", "Изменить файл"), subtitle: location, body: renderDiff(lines), preview: previewDiff(lines))
     case "Write":
-        let path = string("file_path")
+        let path = string("file_path"), content = string("content")
         let existing = try? String(contentsOfFile: path, encoding: .utf8)
-        let lines = diffLines(old: existing ?? "", new: string("content"))
+        let lines = diffLines(old: existing ?? "", new: content)
         let title = existing == nil ? tr("Create a file", "Создать файл") : tr("Overwrite a file", "Перезаписать файл")
-        return Request(title: title, subtitle: displayPath(path), body: renderDiff(lines), preview: previewDiff(lines))
+        let count = splitLines(content).count
+        let subtitle = paths.display(path) + tr(" · \(count) lines", " · строк: \(count)")
+        return Request(title: title, subtitle: subtitle, body: renderDiff(lines), preview: previewDiff(lines))
     case "NotebookEdit":
         let source = string("new_source")
-        return Request(title: tr("Edit a notebook", "Изменить ноутбук"), subtitle: displayPath(string("notebook_path")), body: plain(source), preview: preview(source))
+        return Request(title: tr("Edit a notebook", "Изменить ноутбук"), subtitle: paths.display(string("notebook_path")), body: plain(source), preview: preview(source))
     case "Read":
-        let path = displayPath(string("file_path"))
-        return Request(title: tr("Read a file", "Прочитать файл"), subtitle: path, body: highlightJSON(json(toolInput)), preview: preview(path))
+        let path = paths.display(string("file_path"))
+        return Request(title: tr("Read a file", "Прочитать файл"), subtitle: path, body: renderSummary(toolInput, size: codeSize), preview: preview(path))
     case "WebFetch":
         let prompt = string("prompt")
         return Request(title: tr("Fetch a page", "Открыть страницу"), subtitle: string("url"), body: plain(prompt, font: .systemFont(ofSize: 13)), preview: preview(prompt))
     case "WebSearch":
-        return Request(title: tr("Search the web", "Поиск в интернете"), subtitle: string("query"), body: highlightJSON(json(toolInput)), preview: preview(string("query")))
+        return Request(title: tr("Search the web", "Поиск в интернете"), subtitle: string("query"), body: renderSummary(toolInput, size: codeSize), preview: preview(string("query")))
     default:
         let parts = toolName.components(separatedBy: "__")
         let title = parts.count == 3 && parts[0] == "mcp" ? "MCP · \(parts[1]) → \(parts[2])" : toolName
-        return Request(title: title, body: highlightJSON(json(toolInput)), preview: preview(json(toolInput, pretty: false)))
+        return Request(title: title, body: renderSummary(toolInput, size: codeSize), preview: renderSummary(toolInput, size: previewSize))
     }
 }
-
-// Suggestions go back to Claude Code verbatim; this only labels them, across the shapes seen so far.
-func describeSuggestion(_ suggestion: [String: Any]) -> String {
-    if let rule = suggestion["rule"] as? String { return rule }
-    switch suggestion["type"] as? String {
-    case "addRules", "replaceRules":
-        let rules = (suggestion["rules"] as? [[String: Any]] ?? []).map { rule in
-            let tool = rule["toolName"] as? String ?? "?"
-            guard let content = rule["ruleContent"] as? String else { return tool }
-            return "\(tool)(\(content))"
-        }
-        return rules.joined(separator: ", ")
-    case "addDirectories":
-        return tr("access to ", "доступ к ") + (suggestion["directories"] as? [String] ?? []).joined(separator: ", ")
-    case "setMode":
-        return tr("mode ", "режим ") + (suggestion["mode"] as? String ?? "?")
-    default:
-        return json(suggestion)
-    }
-}
-
-let alwaysTooltip = tr("Always allow: ", "Разрешать всегда: ") + suggestions.map(describeSuggestion).joined(separator: ", ")
 
 // MARK: - Views
 
 final class RoundedView: NSView {
     private let fill: NSColor
+    private let border: NSColor
 
-    init(fill: NSColor, radius: CGFloat) {
+    init(fill: NSColor, radius: CGFloat, border: NSColor = Palette.border) {
         self.fill = fill
+        self.border = border
         super.init(frame: .zero)
         wantsLayer = true
         layer?.cornerRadius = radius
@@ -547,12 +372,12 @@ final class RoundedView: NSView {
 
     override func updateLayer() {
         layer?.backgroundColor = fill.cgColor
-        layer?.borderColor = Palette.border.cgColor
+        layer?.borderColor = border.cgColor
     }
 }
 
 final class PillButton: NSButton {
-    enum Style { case primary, secondary, plain }
+    enum Style { case primary, secondary, plain, danger }
 
     private let style: Style
     private let height: CGFloat
@@ -570,6 +395,7 @@ final class PillButton: NSButton {
         case .primary: NSColor.white
         case .secondary: Palette.text
         case .plain: Palette.secondary
+        case .danger: Palette.danger
         }
         attributedTitle = NSAttributedString(string: title, attributes: [
             .font: NSFont.systemFont(ofSize: compact ? 12.5 : 13, weight: .medium), .foregroundColor: color,
@@ -586,9 +412,15 @@ final class PillButton: NSButton {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
     override func mouseDown(with event: NSEvent) {
+        guard isEnabled else { return super.mouseDown(with: event) }
         alphaValue = 0.75
         super.mouseDown(with: event)
         alphaValue = 1
+    }
+
+    func setArmed(_ armed: Bool) {
+        isEnabled = armed
+        alphaValue = armed ? 1 : 0.45
     }
 
     override func viewDidMoveToWindow() {
@@ -606,9 +438,9 @@ final class PillButton: NSButton {
             switch style {
             case .primary:
                 layer?.backgroundColor = Palette.accent.cgColor
-            case .secondary:
+            case .secondary, .danger:
                 layer?.backgroundColor = Palette.surface.cgColor
-                layer?.borderColor = Palette.border.cgColor
+                layer?.borderColor = (style == .danger ? Palette.dangerBorder : Palette.border).cgColor
                 layer?.borderWidth = 1
             case .plain:
                 layer?.backgroundColor = nil
@@ -626,12 +458,123 @@ func label(_ text: String, font: NSFont, color: NSColor) -> NSTextField {
     return field
 }
 
+final class LinkLabel: NSTextField {
+    var onClick: (() -> Void)?
+}
+
+// "project · subtitle", with the project name linking to its chat in the Claude desktop app when there is one.
+func contextLabel(subtitle: String, size: CGFloat) -> LinkLabel {
+    let text = NSMutableAttributedString()
+    let link = hostSession.flatMap { URL(string: "claude://claude.ai/epitaxy/\($0)") }
+    text.append(NSAttributedString(string: projectName, attributes: [
+        .font: NSFont.systemFont(ofSize: size, weight: link == nil ? .regular : .medium),
+        .foregroundColor: link == nil ? Palette.secondary : Palette.accent,
+    ]))
+    if !subtitle.isEmpty {
+        text.append(NSAttributedString(string: " · " + subtitle, attributes: [.font: NSFont.systemFont(ofSize: size), .foregroundColor: Palette.secondary]))
+    }
+    let field = LinkLabel(labelWithAttributedString: text)
+    field.lineBreakMode = .byTruncatingTail
+    field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+    if let link {
+        field.toolTip = tr("Open this chat in Claude", "Открыть этот чат в Claude")
+        field.onClick = { NSWorkspace.shared.open(link) }
+    }
+    return field
+}
+
+func dangerRow(size: CGFloat) -> NSTextField? {
+    danger.map { label(tr("Careful: ", "Осторожно: ") + $0, font: .systemFont(ofSize: size, weight: .semibold), color: Palette.danger) }
+}
+
+let titlePrefix = danger == nil ? "" : "⚠ "
+
+// MARK: - Global shortcuts
+
+// ⌃⌥Y allows, ⌃⌥N denies, ⌃⌥D opens the details; only the top card holds them, so each press answers one request.
+final class HotKeys {
+    enum Key: UInt32 { case allow, deny, details }
+
+    var onKey: ((Key) -> Void)?
+    private var refs: [EventHotKeyRef] = []
+    private var handler: EventHandlerRef?
+
+    func setActive(_ active: Bool) {
+        if active, refs.isEmpty { register() }
+        if !active, !refs.isEmpty { unregister() }
+    }
+
+    private func register() {
+        if handler == nil {
+            var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
+            InstallEventHandler(GetApplicationEventTarget(), { _, event, context in
+                var id = EventHotKeyID()
+                GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID), nil, MemoryLayout<EventHotKeyID>.size, nil, &id)
+                if let context, let key = Key(rawValue: id.id) {
+                    Unmanaged<HotKeys>.fromOpaque(context).takeUnretainedValue().onKey?(key)
+                }
+                return noErr
+            }, 1, &spec, Unmanaged.passUnretained(self).toOpaque(), &handler)
+        }
+        for (key, code) in [(Key.allow, kVK_ANSI_Y), (.deny, kVK_ANSI_N), (.details, kVK_ANSI_D)] {
+            var ref: EventHotKeyRef?
+            let id = EventHotKeyID(signature: OSType(0x5050_5550), id: key.rawValue)
+            if RegisterEventHotKey(UInt32(code), UInt32(controlKey | optionKey), id, GetApplicationEventTarget(), 0, &ref) == noErr, let ref {
+                refs.append(ref)
+            }
+        }
+    }
+
+    private func unregister() {
+        refs.forEach { UnregisterEventHotKey($0) }
+        refs = []
+    }
+}
+
+// MARK: - Menu bar
+
+// Only the top card shows the badge, with the number of requests waiting across sessions.
+final class MenuBarBadge: NSObject {
+    private var item: NSStatusItem?
+    private let summary = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+
+    func update(active: Bool, count: Int) {
+        guard active else {
+            if let item { NSStatusBar.system.removeStatusItem(item) }
+            item = nil
+            return
+        }
+        let item = self.item ?? makeItem()
+        item.button?.title = " \(count)"
+        summary.title = tr("Waiting for an answer: \(count)", "Ждут ответа: \(count)")
+    }
+
+    private func makeItem() -> NSStatusItem {
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        item.button?.image = NSImage(systemSymbolName: "hand.raised.fill", accessibilityDescription: "Claude Code")
+        item.button?.imagePosition = .imageLeading
+        let menu = NSMenu()
+        menu.addItem(summary)
+        menu.addItem(.separator())
+        let show = NSMenuItem(title: tr("Show the oldest request", "Показать самый старый запрос"), action: #selector(showClicked), keyEquivalent: "")
+        show.target = self
+        menu.addItem(show)
+        item.menu = menu
+        self.item = item
+        return item
+    }
+
+    @objc func showClicked() { showDetails() }
+}
+
 // MARK: - Card
 
 let cardWidth: CGFloat = 384
 let cardPadding: CGFloat = 14
 let cardIconSize: CGFloat = 36
 let cardGap: CGFloat = 10
+// Long enough that a click aimed at whatever sat under the card can't land on its buttons.
+let armDelay: TimeInterval = 0.6
 
 func processStart(_ pid: pid_t) -> TimeInterval {
     var info = kinfo_proc()
@@ -648,9 +591,10 @@ final class CardPanel: NSPanel {
     // Buttons swallow their own mouse-up, so one arriving here was a click on the card itself.
     override func sendEvent(_ event: NSEvent) {
         super.sendEvent(event)
-        if event.type == .leftMouseUp, !(contentView?.hitTest(event.locationInWindow) is NSButton) {
-            onBackgroundClick?()
-        }
+        guard event.type == .leftMouseUp else { return }
+        let hit = contentView?.hitTest(event.locationInWindow)
+        if let link = hit as? LinkLabel, let onClick = link.onClick { return onClick() }
+        if !(hit is NSButton) { onBackgroundClick?() }
     }
 }
 
@@ -659,12 +603,22 @@ final class Card: NSObject {
         contentRect: NSRect(x: 0, y: 0, width: cardWidth, height: 100),
         styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false
     )
-    private let background = RoundedView(fill: Palette.background, radius: 14)
+    private let background = RoundedView(
+        fill: danger == nil ? Palette.background : Palette.dangerBackground, radius: 14,
+        border: danger == nil ? Palette.border : Palette.dangerBorder
+    )
     private let countdown = CALayer()
+    private var decisionButtons: [PillButton] = []
     private var remaining = cardTimeout
     private var hovering = false
+    private var shownAt: Date?
+    private var enteredAfterShow = false
+    private var armed = false
+    private var topSince: Date?
     private var ticker: Timer?
     private var reflow: Timer?
+    private let hotKeys = HotKeys()
+    private let badge = MenuBarBadge()
 
     init(_ request: Request) {
         super.init()
@@ -675,22 +629,23 @@ final class Card: NSObject {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         panel.hidesOnDeactivate = false
         panel.onBackgroundClick = showDetails
+        hotKeys.onKey = { [weak self] in self?.hotKey($0) }
 
         let textWidth = cardWidth - cardPadding * 2 - cardIconSize - 12
         let icon = NSImageView(image: appIcon())
         let close = PillButton("✕", style: .plain, compact: true, target: self, action: #selector(closeClicked))
         close.toolTip = tr("Answer in Claude", "Ответить в Claude")
         let titleRow = NSStackView()
-        titleRow.addView(label(request.title, font: .systemFont(ofSize: 13, weight: .semibold), color: Palette.text), in: .leading)
+        titleRow.addView(label(titlePrefix + request.title, font: .systemFont(ofSize: 13, weight: .semibold), color: Palette.text), in: .leading)
         titleRow.addView(close, in: .trailing)
-        let context = label([projectName, request.subtitle].filter { !$0.isEmpty }.joined(separator: " · "), font: .systemFont(ofSize: 12), color: Palette.secondary)
+        let context = contextLabel(subtitle: request.subtitle, size: 12)
         let preview = NSTextField(labelWithAttributedString: request.preview)
         preview.maximumNumberOfLines = 4
         preview.lineBreakMode = .byCharWrapping
         preview.cell?.truncatesLastVisibleLine = true
         preview.preferredMaxLayoutWidth = textWidth
         preview.isHidden = request.preview.length == 0
-        let text = NSStackView(views: [titleRow, context, preview])
+        let text = NSStackView(views: [titleRow] + [dangerRow(size: 12)].compactMap { $0 } + [context, preview])
         text.orientation = .vertical
         text.alignment = .leading
         text.spacing = 3
@@ -702,13 +657,20 @@ final class Card: NSObject {
         let buttons = NSStackView()
         buttons.spacing = 6
         buttons.addView(PillButton(tr("Details", "Подробнее"), style: .plain, compact: true, target: self, action: #selector(detailsClicked)), in: .leading)
-        if !suggestions.isEmpty {
+        if !suggestions.isEmpty, danger == nil {
             let always = PillButton(tr("Always", "Всегда"), style: .secondary, compact: true, target: self, action: #selector(allowAlwaysClicked))
             always.toolTip = alwaysTooltip
-            buttons.addView(always, in: .trailing)
+            decisionButtons.append(always)
         }
-        buttons.addView(PillButton(tr("Deny", "Запретить"), style: .secondary, compact: true, target: self, action: #selector(denyClicked)), in: .trailing)
-        buttons.addView(PillButton(tr("Allow", "Разрешить"), style: .primary, compact: true, target: self, action: #selector(allowClicked)), in: .trailing)
+        let deny = PillButton(tr("Deny", "Запретить"), style: .secondary, compact: true, target: self, action: #selector(denyClicked))
+        deny.toolTip = "⌃⌥N"
+        let allow = PillButton(tr("Allow", "Разрешить"), style: danger == nil ? .primary : .danger, compact: true, target: self, action: #selector(allowClicked))
+        allow.toolTip = danger == nil ? "⌃⌥Y" : nil
+        decisionButtons += [deny, allow]
+        decisionButtons.forEach {
+            $0.setArmed(false)
+            buttons.addView($0, in: .trailing)
+        }
 
         let stack = NSStackView(views: [top, buttons])
         stack.orientation = .vertical
@@ -738,7 +700,8 @@ final class Card: NSObject {
 
     func show(animated: Bool) {
         let size = NSSize(width: cardWidth, height: panel.contentView?.fittingSize.height ?? 100)
-        let frame = NSRect(origin: targetOrigin(height: size.height), size: size)
+        let frame = NSRect(origin: layout(height: size.height).origin, size: size)
+        shownAt = Date()
         defer {
             startCountdown()
             startReflow()
@@ -747,7 +710,7 @@ final class Card: NSObject {
             panel.setFrame(frame, display: true)
             return panel.orderFrontRegardless()
         }
-        panel.setFrame(frame.offsetBy(dx: 24, dy: 0), display: false)
+        panel.setFrame(frame.offsetBy(dx: corner.isRight ? 24 : -24, dy: 0), display: false)
         panel.alphaValue = 0
         panel.orderFrontRegardless()
         NSAnimationContext.runAnimationGroup { context in
@@ -756,15 +719,25 @@ final class Card: NSObject {
             panel.animator().setFrame(frame, display: true)
             panel.animator().alphaValue = 1
         }
-        NSSound(named: NSSound.Name("Glass"))?.play()
+        if soundEnabled { NSSound(named: NSSound.Name("Glass"))?.play() }
     }
 
-    // Cards from parallel sessions stack oldest on top, so the one asking longest stays in the corner.
-    private func targetOrigin(height: CGFloat) -> NSPoint {
+    func arm() {
+        armed = true
+        decisionButtons.forEach { $0.setArmed(true) }
+    }
+
+    // Cards from parallel sessions stack oldest first from the corner, so the one asking longest stays put.
+    private func layout(height: CGFloat) -> (origin: NSPoint, isTop: Bool, count: Int) {
         let visible = (panel.screen ?? NSScreen.main ?? NSScreen.screens[0]).visibleFrame
         let mine = (processStart(getpid()), getpid())
-        let above = otherCards().filter { ($0.start, $0.pid) < mine }.reduce(0) { $0 + $1.height + cardGap }
-        return NSPoint(x: visible.maxX - cardWidth - cardGap, y: max(visible.minY, visible.maxY - cardGap - above - height))
+        let others = otherCards()
+        let before = others.filter { ($0.start, $0.pid) < mine }.reduce(0) { $0 + $1.height + cardGap }
+        let x = corner.isRight ? visible.maxX - cardWidth - cardGap : visible.minX + cardGap
+        let y = corner.isTop
+            ? max(visible.minY, visible.maxY - cardGap - before - height)
+            : min(visible.maxY - height, visible.minY + cardGap + before)
+        return (NSPoint(x: x, y: y), before == 0, others.count + 1)
     }
 
     private func otherCards() -> [(start: TimeInterval, pid: pid_t, height: CGFloat)] {
@@ -780,17 +753,28 @@ final class Card: NSObject {
         }
     }
 
-    // When a card above goes away, slide up into the freed space.
+    // When a card ahead goes away, slide into the freed space and take over the shortcuts and the badge.
     private func startReflow() {
         reflow = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] _ in
             guard let self else { return }
-            let origin = targetOrigin(height: panel.frame.height)
-            guard abs(origin.y - panel.frame.minY) > 0.5 else { return }
+            let layout = layout(height: panel.frame.height)
+            let isTop = layout.isTop && panel.isVisible
+            topSince = isTop ? topSince ?? Date() : nil
+            hotKeys.setActive(isTop)
+            badge.update(active: isTop, count: layout.count)
+            guard abs(layout.origin.y - panel.frame.minY) > 0.5 else { return }
             NSAnimationContext.runAnimationGroup { context in
                 context.duration = 0.2
-                self.panel.animator().setFrame(NSRect(origin: origin, size: self.panel.frame.size), display: true)
+                self.panel.animator().setFrame(NSRect(origin: layout.origin, size: self.panel.frame.size), display: true)
             }
         }
+    }
+
+    func stepAside() {
+        stopCountdown()
+        hotKeys.setActive(false)
+        badge.update(active: false, count: 0)
+        panel.orderOut(nil)
     }
 
     func stopCountdown() {
@@ -805,12 +789,13 @@ final class Card: NSObject {
             guard let self else { return }
             if !hovering { remaining -= step }
             guard remaining > 0 else { return dismiss() }
+            if !armed, enteredAfterShow, let shownAt, Date().timeIntervalSince(shownAt) >= armDelay { arm() }
             CATransaction.begin()
             CATransaction.setDisableActions(true)
             countdown.frame = CGRect(x: 0, y: 0, width: background.bounds.width * remaining / cardTimeout, height: 2)
             countdown.opacity = 0.7
             background.effectiveAppearance.performAsCurrentDrawingAppearance {
-                self.countdown.backgroundColor = Palette.accent.cgColor
+                self.countdown.backgroundColor = (danger == nil ? Palette.accent : Palette.danger).cgColor
             }
             CATransaction.commit()
         }
@@ -822,11 +807,27 @@ final class Card: NSObject {
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = 0.2
             panel.animator().alphaValue = 0
-            panel.animator().setFrame(panel.frame.offsetBy(dx: 24, dy: 0), display: true)
+            panel.animator().setFrame(panel.frame.offsetBy(dx: corner.isRight ? 24 : -24, dy: 0), display: true)
         }, completionHandler: { leaveToClaude() })
     }
 
-    @objc(mouseEntered:) func mouseEntered(with event: NSEvent) { hovering = true }
+    private func hotKey(_ key: HotKeys.Key) {
+        // A press meant for the card that just left must not answer the one sliding into its place.
+        guard let topSince, Date().timeIntervalSince(topSince) >= armDelay else { return NSSound.beep() }
+        switch key {
+        case .allow:
+            if danger == nil { allow() }
+            NSSound.beep()
+        case .deny: deny()
+        case .details: showDetails()
+        }
+    }
+
+    @objc(mouseEntered:) func mouseEntered(with event: NSEvent) {
+        hovering = true
+        if shownAt != nil { enteredAfterShow = true }
+    }
+
     @objc(mouseExited:) func mouseExited(with event: NSEvent) { hovering = false }
 
     @objc func allowClicked() { allow() }
@@ -846,6 +847,7 @@ final class DetailsWindow: NSObject, NSWindowDelegate {
     )
     private let scroll = NSTextView.scrollableTextView()
     private var textView: NSTextView { scroll.documentView as! NSTextView }
+    private let reason = NSTextField()
 
     init(_ request: Request) {
         super.init()
@@ -857,11 +859,13 @@ final class DetailsWindow: NSObject, NSWindowDelegate {
         window.level = .floating
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         window.isReleasedWhenClosed = false
-        window.minSize = NSSize(width: 520, height: 260)
+        window.minSize = NSSize(width: 520, height: 280)
         window.delegate = self
 
-        let title = label(request.title, font: .systemFont(ofSize: 17, weight: .semibold), color: Palette.text)
-        let context = label([projectName, request.subtitle].filter { !$0.isEmpty }.joined(separator: " · "), font: .systemFont(ofSize: 12.5), color: Palette.secondary)
+        let title = label(titlePrefix + request.title, font: .systemFont(ofSize: 17, weight: .semibold), color: Palette.text)
+        let context = contextLabel(subtitle: request.subtitle, size: 12.5)
+        let contextClick = NSClickGestureRecognizer(target: self, action: #selector(contextClicked))
+        context.addGestureRecognizer(contextClick)
 
         let card = RoundedView(fill: Palette.surface, radius: 10)
         scroll.drawsBackground = false
@@ -878,24 +882,45 @@ final class DetailsWindow: NSObject, NSWindowDelegate {
         // Return should allow, so nothing that takes text may hold the initial focus.
         window.initialFirstResponder = textView
 
+        let reasonCard = RoundedView(fill: Palette.surface, radius: 8)
+        reason.isBezeled = false
+        reason.drawsBackground = false
+        reason.focusRingType = .none
+        reason.font = .systemFont(ofSize: 13)
+        reason.textColor = Palette.text
+        reason.cell?.isScrollable = true
+        reason.cell?.wraps = false
+        reason.placeholderAttributedString = NSAttributedString(
+            string: tr("Reason to deny, Claude will see it (Return denies)", "Причина отказа, её увидит Claude (Enter — запретить)"),
+            attributes: [.foregroundColor: Palette.tertiary, .font: NSFont.systemFont(ofSize: 13)]
+        )
+        reason.translatesAutoresizingMaskIntoConstraints = false
+        reasonCard.addSubview(reason)
+
         let buttons = NSStackView()
         buttons.spacing = 8
-        if !suggestions.isEmpty {
-            let always = PillButton(tr("Always allow", "Разрешать всегда"), style: .secondary, target: self, action: #selector(allowAlwaysClicked))
-            always.toolTip = alwaysTooltip
-            buttons.addView(always, in: .trailing)
+        if danger == nil {
+            let grant = PillButton(tr("Allow for \(Int(grantMinutes)) min", "Разрешить на \(Int(grantMinutes)) мин"), style: .secondary, target: self, action: #selector(allowForAWhileClicked))
+            grant.toolTip = grantTooltip
+            buttons.addView(grant, in: .leading)
+            if !suggestions.isEmpty {
+                let always = PillButton(tr("Always allow", "Разрешать всегда"), style: .secondary, target: self, action: #selector(allowAlwaysClicked))
+                always.toolTip = alwaysTooltip
+                buttons.addView(always, in: .trailing)
+            }
         }
         buttons.addView(PillButton(tr("Deny", "Запретить"), style: .secondary, target: self, action: #selector(denyClicked)), in: .trailing)
-        buttons.addView(PillButton(tr("Allow", "Разрешить"), style: .primary, target: self, action: #selector(allowClicked)), in: .trailing)
+        buttons.addView(PillButton(tr("Allow", "Разрешить"), style: danger == nil ? .primary : .danger, target: self, action: #selector(allowClicked)), in: .trailing)
 
-        let rows: [NSView] = [title, context, card, buttons]
+        let rows: [NSView] = [title] + [dangerRow(size: 12.5)].compactMap { $0 } + [context, card, reasonCard, buttons]
         let stack = NSStackView(views: rows)
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.distribution = .fill
         stack.spacing = 4
         stack.setCustomSpacing(14, after: context)
-        stack.setCustomSpacing(14, after: card)
+        stack.setCustomSpacing(10, after: card)
+        stack.setCustomSpacing(14, after: reasonCard)
         stack.edgeInsets = NSEdgeInsets(top: 34, left: 20, bottom: 18, right: 20)
         stack.wantsLayer = true
         window.contentView = stack
@@ -905,12 +930,17 @@ final class DetailsWindow: NSObject, NSWindowDelegate {
             scroll.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 1),
             scroll.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -1),
             card.heightAnchor.constraint(greaterThanOrEqualToConstant: 80),
+            reason.leadingAnchor.constraint(equalTo: reasonCard.leadingAnchor, constant: 10),
+            reason.trailingAnchor.constraint(equalTo: reasonCard.trailingAnchor, constant: -10),
+            reason.centerYAnchor.constraint(equalTo: reasonCard.centerYAnchor),
+            reasonCard.heightAnchor.constraint(equalToConstant: 32),
         ])
         for row in rows {
             row.widthAnchor.constraint(lessThanOrEqualTo: stack.widthAnchor, constant: -40).isActive = true
         }
-        card.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -40).isActive = true
-        buttons.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -40).isActive = true
+        for row in [card, reasonCard, buttons] {
+            row.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -40).isActive = true
+        }
         fitHeight(to: card)
     }
 
@@ -921,21 +951,28 @@ final class DetailsWindow: NSObject, NSWindowDelegate {
         let usedHeight = layoutManager.usedRect(for: container).height - layoutManager.extraLineFragmentUsedRect.height
         let textHeight = usedHeight + textView.textContainerInset.height * 2 + 2
         let contentHeight = window.contentRect(forFrameRect: window.frame).height + textHeight - card.frame.height
-        window.setContentSize(NSSize(width: window.frame.width, height: min(720, max(240, contentHeight))))
+        window.setContentSize(NSSize(width: window.frame.width, height: min(720, max(260, contentHeight))))
     }
 
     func handleKey(_ event: NSEvent) -> NSEvent? {
         guard event.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty else { return event }
         switch event.keyCode {
-        case 36, 76: allow() // Return, keypad Enter
-        case 53: deny() // Escape
-        default: return event
+        case 36, 76: // Return, keypad Enter
+            if reason.currentEditor() != nil { deny(reason: reason.stringValue) }
+            if danger != nil { NSSound.beep() } else { allow() }
+        case 53: // Escape
+            deny(reason: reason.stringValue)
+        default:
+            return event
         }
+        return nil
     }
 
     @objc func allowClicked() { allow() }
     @objc func allowAlwaysClicked() { allowAlways() }
-    @objc func denyClicked() { deny() }
+    @objc func allowForAWhileClicked() { allowForAWhile() }
+    @objc func denyClicked() { deny(reason: reason.stringValue) }
+    @objc func contextClicked(_ sender: NSClickGestureRecognizer) { (sender.view as? LinkLabel)?.onClick?() }
 
     func windowWillClose(_ notification: Notification) { leaveToClaude() }
 }
@@ -1010,8 +1047,7 @@ func makeDetails() -> DetailsWindow {
 }
 
 func showDetails() {
-    card.stopCountdown()
-    card.panel.orderOut(nil)
+    card.stepAside()
     NSApp.activate(ignoringOtherApps: true)
     makeDetails().window.makeKeyAndOrderFront(nil)
     Timer.scheduledTimer(withTimeInterval: windowTimeout, repeats: false) { _ in leaveToClaude() }
@@ -1039,6 +1075,7 @@ func snapshot(_ window: NSWindow, to path: String) {
 
 if let snapshotPath = environment["PERMISSION_POPUP_SNAPSHOT"] {
     card.show(animated: false)
+    card.arm()
     makeDetails().window.orderFrontRegardless()
     DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
         snapshot(card.panel, to: snapshotPath + "-card.png")

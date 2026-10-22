@@ -12,15 +12,7 @@ func drawIcon() {
     // macOS icon grid: an 824pt body centered on the 1024pt canvas.
     let body = NSBezierPath(roundedRect: NSRect(x: 100, y: 100, width: 824, height: 824), xRadius: 185, yRadius: 185)
 
-    NSGraphicsContext.saveGraphicsState()
-    let shadow = NSShadow()
-    shadow.shadowColor = NSColor.black.withAlphaComponent(0.28)
-    shadow.shadowBlurRadius = 28
-    shadow.shadowOffset = NSSize(width: 0, height: -12)
-    shadow.set()
-    NSColor(hex: 0xC96442).setFill()
-    body.fill()
-    NSGraphicsContext.restoreGraphicsState()
+    // No baked-in shadow: at card size it shows as a grey square around the icon.
     NSGradient(starting: NSColor(hex: 0xE2896A), ending: NSColor(hex: 0xC15C3A))?.draw(in: body, angle: -90)
 
     let center = NSPoint(x: 512, y: 512)

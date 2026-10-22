@@ -1,0 +1,15 @@
+{
+  "tool_name": "Bash",
+  "cwd": "/Users/demo/projects/acme-api",
+  "tool_input": {
+    "command": "git fetch origin && git rebase origin/main && go test ./internal/orders/... -count=1 2>&1 | tail -20",
+    "description": "Rebase on main and run the orders tests"
+  },
+  "permission_suggestions": [
+    {
+      "type": "rule",
+      "rule": "Bash(go test:*)",
+      "behavior": "allow"
+    }
+  ]
+}

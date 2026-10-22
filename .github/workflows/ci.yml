@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: macos-15
+    defaults:
+      run:
+        working-directory: plugins/permission-popup
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tests
+        run: ./test.sh
+
+      - name: Committed app matches its sources
+        run: |
+          expected=$(./source-hash.sh)
+          actual=$(cat PermissionPopup.app/Contents/Resources/source.sha256)
+          if [ "$expected" != "$actual" ]; then
+            echo "::error::PermissionPopup.app is out of date. Run plugins/permission-popup/build.sh and commit the result."
+            exit 1
+          fi
+
+      - name: Build from source
+        run: ./build.sh
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Validate marketplace and plugin
+        working-directory: .
+        run: |
+          npx -y @anthropic-ai/claude-code plugin validate .
+          npx -y @anthropic-ai/claude-code plugin validate plugins/permission-popup

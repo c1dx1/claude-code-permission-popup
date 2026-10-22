@@ -1,0 +1,16 @@
+{
+  "description": "Карточка с Разрешить/Запретить на запросы разрешений Claude Code (macOS)",
+  "hooks": {
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/permission-popup\"",
+            "timeout": 600
+          }
+        ]
+      }
+    ]
+  }
+}

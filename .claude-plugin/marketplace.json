@@ -1,0 +1,15 @@
+{
+  "name": "claude-code-permission-popup",
+  "description": "Ответ на запросы разрешений Claude Code из карточки в углу экрана (macOS)",
+  "owner": {
+    "name": "Nikita Solovyov"
+  },
+  "plugins": [
+    {
+      "name": "permission-popup",
+      "source": "./plugins/permission-popup",
+      "description": "macOS: карточка в углу экрана с кнопками Разрешить/Запретить, когда Claude Code просит разрешение на команду или правку",
+      "version": "1.0.0"
+    }
+  ]
+}

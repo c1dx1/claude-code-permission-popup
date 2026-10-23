@@ -1028,7 +1028,9 @@ final class SettlementWatch {
 // MARK: - Main
 
 let app = NSApplication.shared
-app.setActivationPolicy(.accessory)
+// Launched by the frontmost Claude, the app would otherwise become active and swallow what the user is typing.
+// Only the details window, opened by a click, needs keyboard focus.
+app.setActivationPolicy(.prohibited)
 if let appearance = environment["PERMISSION_POPUP_APPEARANCE"] {
     app.appearance = NSAppearance(named: appearance == "dark" ? .darkAqua : .aqua)
 }
@@ -1048,6 +1050,7 @@ func makeDetails() -> DetailsWindow {
 
 func showDetails() {
     card.stepAside()
+    NSApp.setActivationPolicy(.accessory)
     NSApp.activate(ignoringOtherApps: true)
     makeDetails().window.makeKeyAndOrderFront(nil)
     Timer.scheduledTimer(withTimeInterval: windowTimeout, repeats: false) { _ in leaveToClaude() }

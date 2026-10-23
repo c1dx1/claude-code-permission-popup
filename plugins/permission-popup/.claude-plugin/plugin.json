@@ -1,6 +1,6 @@
 {
   "name": "permission-popup",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "macOS: answer Claude Code permission prompts from a card in the corner of the screen",
   "author": {
     "name": "Nikita Solovyov"

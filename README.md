@@ -45,26 +45,43 @@ when Claude Code offers a rule for similar calls, **Always**.
 
 ## Install
 
-You need macOS 13 or later and Claude Code (CLI or desktop app). The repository is private, so git must be able to
-clone it, for example after `gh auth login`.
+You need macOS 13 or later and the `claude` command in Terminal (`claude --version` prints a version).
+Plugins installed from Terminal work in the Claude desktop app too: both read `~/.claude`.
 
-In Claude Code:
+1. Add this repository as a plugin marketplace, the catalog Claude Code installs plugins from:
 
-```
-/plugin marketplace add c1dx1/claude-code-permission-popup
-/plugin install permission-popup@claude-code-permission-popup
-```
+   ```bash
+   claude plugin marketplace add c1dx1/claude-code-permission-popup
+   ```
 
-Or from a terminal:
+   While the repository is private, you need access to it, and git must be able to clone from GitHub,
+   for example after `gh auth login`.
 
-```bash
-claude plugin marketplace add c1dx1/claude-code-permission-popup
-claude plugin install permission-popup@claude-code-permission-popup
-```
+2. Install the plugin:
 
-To update later: `/plugin marketplace update claude-code-permission-popup`.
+   ```bash
+   claude plugin install permission-popup@claude-code-permission-popup
+   ```
+
+3. Restart Claude Code: start a new `claude` session, or quit and reopen the desktop app.
+
+4. Check it: ask Claude to do something that needs your permission, then switch to another app.
+   A card slides in at the top-right corner of the screen.
+
+Inside a `claude` session the same steps work as `/plugin marketplace add …` and `/plugin install …`.
 
 If you previously wired this hook into `~/.claude/settings.json` by hand, remove it, or every request shows two cards.
+
+**Update:**
+
+```bash
+claude plugin marketplace update claude-code-permission-popup
+claude plugin update permission-popup@claude-code-permission-popup
+```
+
+Then restart Claude Code.
+
+**Uninstall:** `claude plugin uninstall permission-popup@claude-code-permission-popup`.
 
 ## Shortcuts
 

@@ -15,6 +15,7 @@ for theme in light dark; do shot command "$theme"; done
 shot diff light
 shot diff dark
 shot danger light
+shot danger-chain light
 
 "$work/compose" ../card-light.png 28 "$work/command-light-card.png"
 "$work/compose" ../card-dark.png 28 "$work/command-dark-card.png"
@@ -22,3 +23,4 @@ shot danger light
 "$work/compose" ../stack.png 28 "$work/command-light-card.png" "$work/diff-light-card.png"
 "$work/compose" ../window-command.png 24 "$work/command-light-window.png"
 "$work/compose" ../window-diff.png 24 "$work/diff-dark-window.png"
+"$work/compose" ../window-danger.png 24 "$work/danger-chain-light-window.png"

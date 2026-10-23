@@ -11,7 +11,13 @@ let cardTimeout = TimeInterval(environment["PERMISSION_POPUP_TIMEOUT"] ?? "") ??
 // Stays under the 600 s hook timeout in settings.json.
 let windowTimeout: TimeInterval = 540
 let grantMinutes = Double(environment["PERMISSION_POPUP_GRANT_MINUTES"] ?? "") ?? 10
-let soundEnabled = environment["PERMISSION_POPUP_SOUND"] != "0"
+let soundForcedOff = environment["PERMISSION_POPUP_SOUND"] == "0"
+let mutedKey = "muted"
+
+// The menu bar switch is remembered in the app's defaults; the variable mutes regardless of it.
+var soundEnabled: Bool {
+    !soundForcedOff && !UserDefaults.standard.bool(forKey: mutedKey)
+}
 // Their answers are richer than allow/deny, so only Claude Code's own UI can collect them.
 let passthroughTools: Set<String> = ["AskUserQuestion", "ExitPlanMode"]
 let hostSession = environment["CLAUDE_CODE_HOST_SESSION_ID"]
@@ -559,12 +565,22 @@ final class MenuBarBadge: NSObject {
         let show = NSMenuItem(title: tr("Show the oldest request", "Показать самый старый запрос"), action: #selector(showClicked), keyEquivalent: "")
         show.target = self
         menu.addItem(show)
+        menu.addItem(.separator())
+        let sound = NSMenuItem(title: tr("Sound", "Звук"), action: soundForcedOff ? nil : #selector(soundClicked(_:)), keyEquivalent: "")
+        sound.target = self
+        sound.state = soundEnabled ? .on : .off
+        menu.addItem(sound)
         item.menu = menu
         self.item = item
         return item
     }
 
     @objc func showClicked() { showDetails() }
+
+    @objc func soundClicked(_ item: NSMenuItem) {
+        UserDefaults.standard.set(soundEnabled, forKey: mutedKey)
+        item.state = soundEnabled ? .on : .off
+    }
 }
 
 // MARK: - Card

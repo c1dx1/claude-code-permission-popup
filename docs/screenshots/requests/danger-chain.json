@@ -1,0 +1,8 @@
+{
+  "tool_name": "Bash",
+  "cwd": "/Users/demo/projects/acme-api",
+  "tool_input": {
+    "command": "rm -rf ./build ./dist && npm run build && sudo rsync -a --delete dist/ /var/www/acme-api/",
+    "description": "Clean rebuild and deploy to the web root"
+  }
+}

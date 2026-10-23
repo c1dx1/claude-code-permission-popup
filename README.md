@@ -32,16 +32,27 @@ when Claude Code offers a rule for similar calls, **Always**.
   or once the request is settled some other way. There is no card at all for the chat you are already looking at.
   The project name on the card opens the chat.
 - **Stacks.** Requests from parallel sessions stack oldest first; when one goes away, the rest move up. A menu bar
-  badge counts what is waiting.
+  badge counts what is waiting, and its menu has a **Sound** switch.
 - Follows light and dark mode. The UI is in English, or in Russian when that is the system language.
 
-| Light | Dark | Dangerous |
-| --- | --- | --- |
-| <img src="docs/card-light.png" width="280" alt="Card in light mode"> | <img src="docs/card-dark.png" width="280" alt="Card in dark mode"> | <img src="docs/card-danger.png" width="280" alt="Card for a force push"> |
+| Light | Dark |
+| --- | --- |
+| <img src="docs/card-light.png" width="420" alt="Card in light mode"> | <img src="docs/card-dark.png" width="420" alt="Card in dark mode"> |
 
 <img src="docs/window-command.png" width="760" alt="Details window with a command split one step per line">
 
 <img src="docs/window-diff.png" width="760" alt="Details window with the diff of an edit in dark mode">
+
+### Dangerous requests
+
+A risky request turns the card red and names what caught the eye. **Allow** stays clickable but is no longer the
+default, so neither Return nor ⌃⌥Y can approve it by habit.
+
+<p align="center">
+  <img src="docs/card-danger.png" width="454" alt="Red card for git push --force">
+</p>
+
+<img src="docs/window-danger.png" width="760" alt="Details window for a chain with rm -rf and sudo">
 
 ## Install
 
@@ -53,9 +64,6 @@ Plugins installed from Terminal work in the Claude desktop app too: both read `~
    ```bash
    claude plugin marketplace add c1dx1/claude-code-permission-popup
    ```
-
-   While the repository is private, you need access to it, and git must be able to clone from GitHub,
-   for example after `gh auth login`.
 
 2. Install the plugin:
 
@@ -104,7 +112,7 @@ Set these in the `env` block of `~/.claude/settings.json`, for example
 | --- | --- | --- |
 | `PERMISSION_POPUP_TIMEOUT` | `15` | Seconds a card waits before handing the question to Claude Code's prompt |
 | `PERMISSION_POPUP_CORNER` | `top-right` | `top-right`, `top-left`, `bottom-right` or `bottom-left` |
-| `PERMISSION_POPUP_SOUND` | `1` | `0` turns the sound off |
+| `PERMISSION_POPUP_SOUND` | `1` | `0` turns the sound off for good; otherwise the **Sound** switch in the menu bar badge decides |
 | `PERMISSION_POPUP_GRANT_MINUTES` | `10` | How long **Allow for N min** lasts |
 
 ## How it works

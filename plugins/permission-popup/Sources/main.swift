@@ -14,9 +14,17 @@ let grantMinutes = Double(environment["PERMISSION_POPUP_GRANT_MINUTES"] ?? "") ?
 let soundForcedOff = environment["PERMISSION_POPUP_SOUND"] == "0"
 let mutedKey = "muted"
 
-// The menu bar switch is remembered in the app's defaults; the variable mutes regardless of it.
+// The switch on the card and in the menu bar is remembered in the app's defaults; the variable mutes regardless of it.
 var soundEnabled: Bool {
     !soundForcedOff && !UserDefaults.standard.bool(forKey: mutedKey)
+}
+
+var soundSymbol: String {
+    soundEnabled ? "speaker.wave.2" : "speaker.slash"
+}
+
+func toggleSound() {
+    UserDefaults.standard.set(soundEnabled, forKey: mutedKey)
 }
 // Their answers are richer than allow/deny, so only Claude Code's own UI can collect them.
 let passthroughTools: Set<String> = ["AskUserQuestion", "ExitPlanMode"]
@@ -455,6 +463,30 @@ final class PillButton: NSButton {
     }
 }
 
+// A borderless symbol button that, like the pills, acts on the first click.
+final class IconButton: NSButton {
+    init(symbol: String, target: AnyObject, action: Selector) {
+        super.init(frame: .zero)
+        self.target = target
+        self.action = action
+        isBordered = false
+        imagePosition = .imageOnly
+        contentTintColor = Palette.secondary
+        setSymbol(symbol)
+    }
+
+    required init?(coder: NSCoder) { fatalError("unused") }
+
+    func setSymbol(_ name: String) {
+        image = NSImage(systemSymbolName: name, accessibilityDescription: nil)?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 12, weight: .medium))
+    }
+
+    override var intrinsicContentSize: NSSize { NSSize(width: 22, height: 26) }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
 func label(_ text: String, font: NSFont, color: NSColor) -> NSTextField {
     let field = NSTextField(labelWithString: text)
     field.font = font
@@ -578,7 +610,7 @@ final class MenuBarBadge: NSObject {
     @objc func showClicked() { showDetails() }
 
     @objc func soundClicked(_ item: NSMenuItem) {
-        UserDefaults.standard.set(soundEnabled, forKey: mutedKey)
+        toggleSound()
         item.state = soundEnabled ? .on : .off
     }
 }
@@ -651,8 +683,13 @@ final class Card: NSObject {
         let icon = NSImageView(image: appIcon())
         let close = PillButton("✕", style: .plain, compact: true, target: self, action: #selector(closeClicked))
         close.toolTip = tr("Answer in Claude", "Ответить в Claude")
+        let sound = IconButton(symbol: soundSymbol, target: self, action: #selector(soundClicked(_:)))
+        sound.toolTip = tr("Sound on or off", "Звук вкл. или выкл.")
+        sound.isEnabled = !soundForcedOff
         let titleRow = NSStackView()
+        titleRow.spacing = 2
         titleRow.addView(label(titlePrefix + request.title, font: .systemFont(ofSize: 13, weight: .semibold), color: Palette.text), in: .leading)
+        titleRow.addView(sound, in: .trailing)
         titleRow.addView(close, in: .trailing)
         let context = contextLabel(subtitle: request.subtitle, size: 12)
         let preview = NSTextField(labelWithAttributedString: request.preview)
@@ -851,6 +888,11 @@ final class Card: NSObject {
     @objc func denyClicked() { deny() }
     @objc func detailsClicked() { showDetails() }
     @objc func closeClicked() { leaveToClaude() }
+
+    @objc func soundClicked(_ sender: IconButton) {
+        toggleSound()
+        sender.setSymbol(soundSymbol)
+    }
 }
 
 // MARK: - Details window

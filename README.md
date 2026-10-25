@@ -32,7 +32,9 @@ when Claude Code offers a rule for similar calls, **Always**.
   or once the request is settled some other way. There is no card at all for the chat you are already looking at.
   The project name on the card opens the chat.
 - **Stacks.** Requests from parallel sessions stack oldest first; when one goes away, the rest move up. A menu bar
-  badge counts what is waiting, and its menu has a **Sound** switch.
+  badge counts what is waiting.
+- **One-click mute.** The speaker icon on the card turns the sound off and back on; the choice is remembered.
+  The menu bar badge has the same **Sound** switch.
 - Follows light and dark mode. The UI is in English, or in Russian when that is the system language.
 
 | Light | Dark |
@@ -112,7 +114,7 @@ Set these in the `env` block of `~/.claude/settings.json`, for example
 | --- | --- | --- |
 | `PERMISSION_POPUP_TIMEOUT` | `15` | Seconds a card waits before handing the question to Claude Code's prompt |
 | `PERMISSION_POPUP_CORNER` | `top-right` | `top-right`, `top-left`, `bottom-right` or `bottom-left` |
-| `PERMISSION_POPUP_SOUND` | `1` | `0` turns the sound off for good; otherwise the **Sound** switch in the menu bar badge decides |
+| `PERMISSION_POPUP_SOUND` | `1` | `0` turns the sound off for good; otherwise the speaker icon on the card decides |
 | `PERMISSION_POPUP_GRANT_MINUTES` | `10` | How long **Allow for N min** lasts |
 
 ## How it works

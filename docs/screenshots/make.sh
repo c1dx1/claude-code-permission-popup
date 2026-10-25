@@ -9,7 +9,7 @@ swiftc -O -target "$(uname -m)-apple-macos13.0" compose.swift -o "$work/compose"
 
 shot() { # request appearance
     env -u CLAUDE_CODE_HOST_SESSION_ID PERMISSION_POPUP_SNAPSHOT="$work/$1-$2" PERMISSION_POPUP_APPEARANCE="$2" \
-        "$app" -AppleLanguages '(en)' < "requests/$1.json"
+        "$app" -AppleLanguages '(en)' -muted NO < "requests/$1.json"
 }
 for theme in light dark; do shot command "$theme"; done
 shot diff light

@@ -29,8 +29,8 @@ when Claude Code offers a rule for similar calls, **Always**.
   reason Claude will read, or allow similar calls for 10 minutes.
 - **Gets out of the way.** A card times out after 15 seconds (paused while the pointer is over it) and hands the
   question to Claude Code's own prompt. It also steps aside as soon as you open that chat in the Claude desktop app,
-  or once the request is settled some other way. There is no card at all for the chat you are already looking at.
-  The project name on the card opens the chat.
+  or once the request is settled some other way. In the desktop app there is no card at all for the chat you are
+  already looking at, and the project name on the card opens the chat.
 - **Stacks.** Requests from parallel sessions stack oldest first; when one goes away, the rest move up. A menu bar
   badge counts what is waiting.
 - **One-click mute.** The speaker icon on the card turns the sound off and back on; the choice is remembered.
@@ -103,7 +103,8 @@ They answer the top card and work from any app.
 | ⌃⌥N | Deny |
 | ⌃⌥D | Open the details |
 
-In the details window, Return allows and Esc denies; with the reason field focused, Return denies with that reason.
+In the details window, Return allows (not for dangerous requests) and Esc denies; with the reason field focused,
+Return denies with that reason.
 
 ## Configuration
 
